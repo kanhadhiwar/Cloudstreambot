@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: Anime
+    name: cloud-stream-bot
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
