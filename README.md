@@ -1,2 +1,0 @@
-# Cloudstreambot
-Anime content upload
