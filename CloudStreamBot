@@ -1,0 +1,119 @@
+import os
+import threading
+import requests
+from pathlib import Path
+from flask import Flask, send_from_directory, abort
+from telegram import Update
+from telegram.ext import Application, MessageHandler, CommandHandler, ContextTypes, filters
+
+# ================= CONFIG =================
+
+BOT_TOKEN = "8359509289:AAF2Fnh9cQDQfwyUj_RdcfdW4Zn8VVKzxXo"
+
+# Render deployment me aap ye env me set karoge:
+# BASE_URL = https://your-app-name.onrender.com
+BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+
+VIDEO_DIR = "videos"
+os.makedirs(VIDEO_DIR, exist_ok=True)
+
+# ================ FLASK SERVER ================
+web_app = Flask(__name__)
+
+@web_app.route("/watch/<path:filename>")
+def watch_video(filename):
+    file_path = Path(VIDEO_DIR) / filename
+    if not file_path.exists():
+        abort(404)
+    return send_from_directory(VIDEO_DIR, filename, mimetype="video/mp4")
+
+@web_app.route("/download/<path:filename>")
+def download_video(filename):
+    file_path = Path(VIDEO_DIR) / filename
+    if not file_path.exists():
+        abort(404)
+    return send_from_directory(VIDEO_DIR, filename, as_attachment=True, download_name=filename)
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8000))
+    web_app.run(host="0.0.0.0", port=port)
+
+# ============== TELEGRAM HANDLERS ==============
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Bot Ready ✅\n\nVideo bhejo ya forward karo, main download karke streaming link de dunga 🎬"
+    )
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    file_id = None
+
+    if msg.video:
+        file_id = msg.video.file_id
+        ext = ".mp4"
+        filename = msg.video.file_unique_id + ext
+    elif msg.document and msg.document.mime_type.startswith("video/"):
+        file_id = msg.document.file_id
+        ext = Path(msg.document.file_name).suffix or ".mp4"
+        filename = msg.document.file_unique_id + ext
+    else:
+        await msg.reply_text("❌ Unsupported Format!")
+        return
+
+    processing = await msg.reply_text("🔄 Processing start...")
+
+    # Download phase
+    await processing.edit_text("⬇️ Downloading from Telegram cloud...")
+    file_info = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}").json()
+
+    if not file_info.get("ok"):
+        await processing.edit_text("❌ Download failed at API!")
+        return
+
+    file_path = file_info["result"]["file_path"]
+    download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+
+    save_path = Path(VIDEO_DIR) / filename
+
+    # Actual download with size-based progress simulation
+    file = requests.get(download_url, stream=True)
+    total_size = int(file.headers.get("content-length", 0))
+    downloaded = 0
+    block = 1024 * 256  # 256KB chunks
+
+    with open(save_path, "wb") as f:
+        for data in file.iter_content(block):
+            downloaded += len(data)
+            f.write(data)
+            percent = int((downloaded / total_size) * 100) if total_size else 0
+            if percent % 10 == 0:  # har 10% par update
+                try:
+                    await processing.edit_text(f"⬇️ Downloading... {percent}% completed")
+                except:
+                    pass
+
+    await processing.edit_text("💾 Uploading to Render server storage...")
+
+    # Upload complete → give final links
+    stream_link = f"{BASE_URL}/watch/{filename}"
+    dl_link = f"{BASE_URL}/download/{filename}"
+
+    await processing.edit_text("✅ Done! Link generate ho raha hai...")
+
+    await msg.reply_text(
+        f"🎬 *Your Streaming Link Ready ✅*\n\n▶️ Stream: {stream_link}\n📥 Download: {dl_link}",
+        parse_mode="Markdown"
+    )
+
+# ============== BOT START ===============
+def main():
+    threading.Thread(target=run_flask, daemon=True).start()
+    bot = Application.builder().token(BOT_TOKEN).build()
+    bot.add_handler(CommandHandler("start", start))
+    bot.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
+    print("🤖 Bot is running on cloud + local server...")
+    bot.run_polling()
+
+if __name__ == "__main__":
+    main()
